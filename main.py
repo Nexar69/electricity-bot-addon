@@ -25,7 +25,7 @@ OFF_VOLTAGE = config.get(
     100
 )
 
-HA_URL = "http://supervisor/core/api/states/"
+HA_URL = "http://homeassistant:8123/api/states/"
 
 
 headers = {
