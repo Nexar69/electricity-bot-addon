@@ -207,9 +207,15 @@ def main():
         .build()
     )
 
-    app.add_handler(
-        CommandHandler("status", status)
+    app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("status", status))
+
+app.add_handler(
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        keyboard,
     )
+)
 
     threading.Thread(
         target=monitor,
