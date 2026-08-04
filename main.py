@@ -117,7 +117,6 @@ def monitor(app):
             if duration >= 10 and not outage_announced:
                 try:
                     app.bot.send_message(
-                    app.bot.send_message(
                         chat_id=CHAT_ID,
                         text=(
                             "🔴 ВІДКЛЮЧЕННЯ ЕЛЕКТРОЕНЕРГІЇ\n\n"
