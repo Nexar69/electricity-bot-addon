@@ -40,7 +40,7 @@ headers = {
 KEYBOARD = ReplyKeyboardMarkup(
     [
         ["🔌 Статус світла"],
-        ["📊 Напруга", "ℹ️ Допомога"],
+        ["📈 Статистика", "ℹ️ Допомога"],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -205,13 +205,13 @@ async def keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🔌 Статус світла":
         await status(update, context)
 
-    elif text == "📊 Напруга":
+    elif text == "📈 Статистика":
         voltage = get_voltage()
 
         await update.message.reply_text(
-            f"🔌 Поточна напруга: {voltage:.1f} В",
-            reply_markup=KEYBOARD,
-        )
+        "📈 Генерую статистику...",
+        reply_markup=KEYBOARD,
+    )
 
     elif text == "ℹ️ Допомога":
         await update.message.reply_text(
