@@ -132,8 +132,7 @@ async def monitor(app):
         await asyncio.sleep(5)
 
 
-async def main():
-
+def main():
     app = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -144,12 +143,8 @@ async def main():
         CommandHandler("status", status)
     )
 
-    asyncio.create_task(
-        monitor(app)
-    )
-
-    await app.run_polling()
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
