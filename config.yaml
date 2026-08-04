@@ -1,8 +1,22 @@
 name: Electricity Telegram Bot
 version: "1.0.0"
 slug: electricity_telegram_bot
-description: Telegram bot for monitoring electricity availability
+description: Telegram bot for monitoring electricity
 startup: application
 boot: auto
 arch:
   - amd64
+
+options:
+  telegram_token: ""
+  chat_id: ""
+  ha_token: ""
+  voltage_sensor: "sensor.huawei_grid_voltage_l1"
+  off_voltage: 100
+
+schema:
+  telegram_token: str
+  chat_id: str
+  ha_token: password
+  voltage_sensor: str
+  off_voltage: int
