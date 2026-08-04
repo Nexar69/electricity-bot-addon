@@ -117,12 +117,13 @@ def monitor(app):
             if duration >= 10 and not outage_announced:
                 try:
                     app.bot.send_message(
+                    app.bot.send_message(
                         chat_id=CHAT_ID,
                         text=(
                             "🔴 ВІДКЛЮЧЕННЯ ЕЛЕКТРОЕНЕРГІЇ\n\n"
                             f"🔌 Напруга: {voltage:.1f} В"
-                        )
-                        reply_markup=KEYBOARD
+                        ),
+                        reply_markup=KEYBOARD,
                     )
                     outage_announced = True
                 except Exception as e:
@@ -151,21 +152,20 @@ def monitor(app):
                                 "🟢 ЕЛЕКТРОЕНЕРГІЯ ПОВЕРНУЛАСЯ\n\n"
                                 f"⏱ Тривалість відключення: {duration_text}\n"
                                 f"🔌 Напруга: {voltage:.1f} В"
-                            )
-                            reply_markup=KEYBOARD
+                            ),
+                            reply_markup=KEYBOARD,
                         )
                     except Exception as e:
                         print("Telegram error:", e)
 
-                # Reset whether outage was announced or not
                 outage_start = None
                 outage_announced = False
 
         last_state = power
         time.sleep(5)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚡ Бот запущено!\n\n"
         "Використовуйте кнопки нижче.",
@@ -174,14 +174,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     text = update.message.text
 
     if text == "🔌 Статус світла":
         await status(update, context)
 
     elif text == "📊 Напруга":
-
         voltage = get_voltage()
 
         await update.message.reply_text(
@@ -190,7 +188,6 @@ async def keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == "ℹ️ Допомога":
-
         await update.message.reply_text(
             "🤖 Я повідомляю про відключення та "
             "відновлення електроенергії.\n\n"
@@ -200,6 +197,7 @@ async def keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=KEYBOARD,
         )
 
+
 def main():
     app = (
         Application.builder()
@@ -208,19 +206,19 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("status", status))
 
-app.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        keyboard,
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            keyboard,
+        )
     )
-)
 
     threading.Thread(
         target=monitor,
         args=(app,),
-        daemon=True
+        daemon=True,
     ).start()
 
     app.run_polling()
