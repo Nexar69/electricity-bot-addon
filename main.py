@@ -2,7 +2,17 @@ import time
 import threading
 import requests
 
-from telegram import Update
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 CONFIG_PATH = "/data/options.json"
@@ -27,6 +37,15 @@ headers = {
     "Authorization": f"Bearer {HA_TOKEN}",
     "Content-Type": "application/json",
 }
+
+KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["🔌 Статус світла"],
+        ["📊 Напруга", "ℹ️ Допомога"],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
 
 last_state = None
 outage_start = None
@@ -68,7 +87,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔌 Напруга: {voltage:.1f} В"
         )
 
-    await update.message.reply_text(text)
+    await update.message.reply_text(
+        text,
+        reply_markup=KEYBOARD,
+    )
 
 
 def monitor(app):
@@ -100,6 +122,7 @@ def monitor(app):
                             "🔴 ВІДКЛЮЧЕННЯ ЕЛЕКТРОЕНЕРГІЇ\n\n"
                             f"🔌 Напруга: {voltage:.1f} В"
                         )
+                        reply_markup=KEYBOARD
                     )
                     outage_announced = True
                 except Exception as e:
@@ -129,6 +152,7 @@ def monitor(app):
                                 f"⏱ Тривалість відключення: {duration_text}\n"
                                 f"🔌 Напруга: {voltage:.1f} В"
                             )
+                            reply_markup=KEYBOARD
                         )
                     except Exception as e:
                         print("Telegram error:", e)
@@ -140,6 +164,41 @@ def monitor(app):
         last_state = power
         time.sleep(5)
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    await update.message.reply_text(
+        "⚡ Бот запущено!\n\n"
+        "Використовуйте кнопки нижче.",
+        reply_markup=KEYBOARD,
+    )
+
+
+async def keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    text = update.message.text
+
+    if text == "🔌 Статус світла":
+        await status(update, context)
+
+    elif text == "📊 Напруга":
+
+        voltage = get_voltage()
+
+        await update.message.reply_text(
+            f"🔌 Поточна напруга: {voltage:.1f} В",
+            reply_markup=KEYBOARD,
+        )
+
+    elif text == "ℹ️ Допомога":
+
+        await update.message.reply_text(
+            "🤖 Я повідомляю про відключення та "
+            "відновлення електроенергії.\n\n"
+            "• 🔌 Статус світла\n"
+            "• 📊 Поточна напруга\n"
+            "• /status",
+            reply_markup=KEYBOARD,
+        )
 
 def main():
     app = (
