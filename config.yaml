@@ -1,0 +1,8 @@
+name: Electricity Telegram Bot
+version: "1.0.0"
+slug: electricity_telegram_bot
+description: Telegram bot for monitoring electricity availability
+startup: application
+boot: auto
+arch:
+  - amd64
