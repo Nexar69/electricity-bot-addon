@@ -13,7 +13,6 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from telegram.ext import Application, CommandHandler, ContextTypes
 
 CONFIG_PATH = "/data/options.json"
 
@@ -87,10 +86,38 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔌 Напруга: {voltage:.1f} В"
         )
 
-    await update.message.reply_text(
+    status_message = await update.message.reply_text(
         text,
         reply_markup=KEYBOARD,
     )
+
+    if update.effective_chat.type in ("group", "supergroup"):
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+        context.application.create_task(
+            delete_after_delay(
+                context,
+                update.effective_chat.id,
+                status_message.message_id,
+            )
+        )
+
+
+async def delete_after_delay(context, chat_id, message_id):
+    import asyncio
+
+    await asyncio.sleep(20)
+
+    try:
+        await context.bot.delete_message(
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+    except Exception:
+        pass
 
 
 def monitor(app):
