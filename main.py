@@ -1,6 +1,10 @@
 import time
 import threading
 import requests
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+import os
+import json
 
 from telegram import (
     Update,
@@ -31,6 +35,7 @@ SENSOR = config.get(
 OFF_VOLTAGE = config.get("off_voltage", 150)
 
 HA_URL = "http://homeassistant:8123/api/states/"
+HA_HISTORY_URL = "http://homeassistant:8123/api/history/period"
 
 headers = {
     "Authorization": f"Bearer {HA_TOKEN}",
@@ -50,6 +55,7 @@ last_state = None
 outage_start = None
 outage_announced = False
 
+def create_statistics_chart(times, voltages):
 
 def get_voltage():
     try:
@@ -71,6 +77,28 @@ def get_voltage():
         print("HA error:", repr(e))
         return 0.0
 
+def debug_history():
+    try:
+        url = (
+            "http://homeassistant:8123/api/history/period"
+            f"?filter_entity_id={SENSOR}"
+        )
+
+        r = requests.get(
+            url,
+            headers=headers,
+            timeout=30,
+        )
+
+        print("\n========== HISTORY STATUS ==========")
+        print("HTTP:", r.status_code)
+        print("Headers:", r.headers)
+        print("====================================")
+        print(r.text)
+        print("=========== END HISTORY ============\n")
+
+    except Exception as e:
+        print("History error:", repr(e))
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voltage = get_voltage()
@@ -247,6 +275,8 @@ def main():
         daemon=True,
     ).start()
 
+    debug_history()
+    
     app.run_polling()
 
 
