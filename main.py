@@ -8,6 +8,7 @@ import json
 from history import (
     get_history,
     calculate_statistics,
+    calculate_extra_statistics,
 )
 
 from telegram import (
@@ -138,7 +139,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def statistics(update, context):
-    history = get_history(
+        history = get_history(
         HA_URL,
         SENSOR,
         headers,
@@ -146,14 +147,17 @@ async def statistics(update, context):
     )
 
     stats = calculate_statistics(history)
+    extra = calculate_extra_statistics(history)
 
     text = (
-        "📈 Статистика за 24 години\n\n"
-        f"🟢 Час зі світлом: {stats['uptime']}\n"
-        f"🔴 Час без світла: {stats['downtime']}\n"
-        f"⚡ Середня напруга: {stats['average_voltage']:.1f} В\n"
-        f"⬆ Максимум: {stats['max_voltage']:.1f} В\n"
-        f"⬇ Мінімум: {stats['min_voltage']:.1f} В\n"
+        "📈 Статистика за останні 24 години\n\n"
+        f"🟢 Час з електропостачанням: {stats['uptime']}\n"
+        f"🔴 Час без електропостачання: {stats['downtime']}\n"
+        f"⚡ Середня напруга: {extra['average_voltage']:.1f} В\n"
+        f"🟢 Середня напруга (при наявності): {extra['average_on_voltage']:.1f} В\n"
+        f"⬆ Максимальна напруга: {extra['maximum_voltage']:.1f} В\n"
+        f"⬇ Мінімальна напруга: {extra['minimum_voltage']:.1f} В\n"
+        f"⚠ Подій низької напруги: {extra['low_voltage_events']}\n"
         f"🔌 Відключень: {stats['outages']}"
     )
 
@@ -296,6 +300,8 @@ def main():
             statistics,
         )
     )
+
+app.add_handler(CommandHandler("status", status))
     
     app.add_handler(
         MessageHandler(
