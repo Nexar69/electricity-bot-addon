@@ -1,4 +1,7 @@
-FROM python:3.13-alpine
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV MPLCONFIGDIR=/tmp/matplotlib
 
 WORKDIR /app
 
@@ -10,5 +13,6 @@ RUN pip install \
 
 COPY main.py .
 COPY history.py .
+COPY chart.py .
 
 CMD ["python3", "main.py"]
