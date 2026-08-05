@@ -1,9 +1,10 @@
 name: Electricity Telegram Bot
-version: "1.0.0"
+version: "1.1.0"
 slug: electricity_telegram_bot
 description: Telegram bot for monitoring electricity
 startup: application
 boot: auto
+
 arch:
   - amd64
 
@@ -12,7 +13,10 @@ options:
   chat_id: ""
   ha_token: ""
   voltage_sensor: "sensor.huawei_grid_voltage_l1"
-  off_voltage: 100
+  off_voltage: 150
+  low_voltage_threshold: 200
+  history_hours: 24
+  auto_delete_seconds: 20
 
 schema:
   telegram_token: str
@@ -20,3 +24,6 @@ schema:
   ha_token: password
   voltage_sensor: str
   off_voltage: int
+  low_voltage_threshold: int
+  history_hours: int
+  auto_delete_seconds: int
