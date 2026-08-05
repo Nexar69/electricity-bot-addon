@@ -441,9 +441,6 @@ async def statistics(
                 f"📊 Доступність: "
                 f"{stats['uptime_percent']:.2f}%\n\n"
 
-                f"⚡ Середня напруга: "
-                f"{stats['average_voltage']:.1f} В\n"
-
                 f"🟢 Середня при наявності: "
                 f"{stats['average_on_voltage']:.1f} В\n"
 
