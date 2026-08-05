@@ -223,76 +223,96 @@ async def statistics(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    loading_message = (
-        await update.message.reply_text(
-            "📈 Отримую статистику...",
-            reply_markup=KEYBOARD,
-        )
+    is_group = update.effective_chat.type in (
+        "group",
+        "supergroup",
     )
 
-    history = await asyncio.to_thread(
-        get_history,
-        HA_URL,
-        SENSOR,
-        HEADERS,
-        HISTORY_HOURS,
+    loading_message = await update.message.reply_text(
+        "📈 Отримую статистику..."
     )
 
-    stats = await asyncio.to_thread(
-        calculate_statistics,
-        history,
-        OFF_VOLTAGE,
-        LOW_VOLTAGE_THRESHOLD,
-    )
-
-    if not history:
-        text = (
-            "⚠️ Не вдалося отримати історію "
-            "з Home Assistant.\n\n"
-            "Перевірте, чи Recorder зберігає "
-            "історію цього сенсора."
-        )
-
-    else:
-        text = (
-            f"📈 Статистика за останні "
-            f"{HISTORY_HOURS} год\n\n"
-            f"🟢 Час з електропостачанням: "
-            f"{stats['uptime']}\n"
-            f"🔴 Час без електропостачання: "
-            f"{stats['downtime']}\n"
-            f"📊 Доступність: "
-            f"{stats['uptime_percent']:.2f}%\n\n"
-            f"⚡ Середня напруга: "
-            f"{stats['average_voltage']:.1f} В\n"
-            f"🟢 Середня при наявності: "
-            f"{stats['average_on_voltage']:.1f} В\n"
-            f"⬆ Максимальна напруга: "
-            f"{stats['max_voltage']:.1f} В\n"
-            f"⬇ Мінімальна напруга: "
-            f"{stats['min_voltage']:.1f} В\n\n"
-            f"🔌 Відключень: "
-            f"{stats['outages']}\n"
-            f"⚠️ Подій низької напруги: "
-            f"{stats['low_voltage_events']}"
-        )
+    # Delete the user's command/button message immediately in groups.
+    if is_group:
+        try:
+            await update.message.delete()
+        except Exception as error:
+            print(
+                "Could not delete statistics request:",
+                repr(error),
+            )
 
     try:
-        await loading_message.edit_text(
-            text,
-            reply_markup=KEYBOARD,
+        history = await asyncio.to_thread(
+            get_history,
+            HA_URL,
+            SENSOR,
+            HEADERS,
+            HISTORY_HOURS,
         )
 
-        await schedule_temporary_deletion(
-            update,
-            context,
-            loading_message,
+        stats = await asyncio.to_thread(
+            calculate_statistics,
+            history,
+            OFF_VOLTAGE,
+            LOW_VOLTAGE_THRESHOLD,
         )
+
+        if not history:
+            text = (
+                "⚠️ Не вдалося отримати історію "
+                "з Home Assistant.\n\n"
+                "Перевірте, чи Recorder зберігає "
+                "історію цього сенсора."
+            )
+        else:
+            text = (
+                f"📈 Статистика за останні "
+                f"{HISTORY_HOURS} год\n\n"
+                f"🟢 Час з електропостачанням: "
+                f"{stats['uptime']}\n"
+                f"🔴 Час без електропостачання: "
+                f"{stats['downtime']}\n"
+                f"📊 Доступність: "
+                f"{stats['uptime_percent']:.2f}%\n\n"
+                f"⚡ Середня напруга: "
+                f"{stats['average_voltage']:.1f} В\n"
+                f"🟢 Середня при наявності: "
+                f"{stats['average_on_voltage']:.1f} В\n"
+                f"⬆ Максимальна напруга: "
+                f"{stats['max_voltage']:.1f} В\n"
+                f"⬇ Мінімальна напруга: "
+                f"{stats['min_voltage']:.1f} В\n\n"
+                f"🔌 Відключень: "
+                f"{stats['outages']}\n"
+                f"⚠️ Подій низької напруги: "
+                f"{stats['low_voltage_events']}"
+            )
+
+        # Do not put KEYBOARD here.
+        await loading_message.edit_text(text)
 
     except Exception as error:
         print(
-            "Telegram statistics error:",
+            "Statistics error:",
             repr(error),
+        )
+
+        try:
+            await loading_message.edit_text(
+                "⚠️ Помилка під час отримання статистики."
+            )
+        except Exception:
+            pass
+
+    # Delete the finished statistics message after 20 seconds in groups.
+    if is_group:
+        context.application.create_task(
+            delete_after_delay(
+                context,
+                update.effective_chat.id,
+                loading_message.message_id,
+            )
         )
 
 
