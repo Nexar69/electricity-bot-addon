@@ -11,16 +11,16 @@ from history import (
 )
 
 from telegram import (
-    ReplyKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     Update,
 )
 
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
-    MessageHandler,
-    filters,
 )
 
 
@@ -89,18 +89,25 @@ HEADERS = {
 }
 
 
-KEYBOARD = ReplyKeyboardMarkup(
+MENU_KEYBOARD = InlineKeyboardMarkup(
     [
         [
-            "🔌 Статус світла",
+            InlineKeyboardButton(
+                "🔌 Статус світла",
+                callback_data="status",
+            ),
         ],
         [
-            "📈 Статистика",
-            "ℹ️ Допомога",
+            InlineKeyboardButton(
+                "📈 Статистика",
+                callback_data="statistics",
+            ),
+            InlineKeyboardButton(
+                "ℹ️ Допомога",
+                callback_data="help",
+            ),
         ],
-    ],
-    resize_keyboard=True,
-    is_persistent=True,
+    ]
 )
 
 
@@ -160,7 +167,10 @@ def format_duration(seconds: int) -> str:
     """
     Convert seconds to a Ukrainian duration string.
     """
-    seconds = max(0, int(seconds))
+    seconds = max(
+        0,
+        int(seconds),
+    )
 
     hours, remainder = divmod(
         seconds,
@@ -188,6 +198,13 @@ def format_duration(seconds: int) -> str:
     return f"{remaining_seconds} с"
 
 
+def is_group_chat(update: Update) -> bool:
+    return update.effective_chat.type in (
+        "group",
+        "supergroup",
+    )
+
+
 async def delete_after_delay(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
@@ -213,40 +230,15 @@ async def delete_after_delay(
         )
 
 
-async def delete_request_message(
-    update: Update,
-) -> None:
-    """
-    Delete the user's command or keyboard-button message in groups.
-    """
-    if update.effective_chat.type not in (
-        "group",
-        "supergroup",
-    ):
-        return
-
-    try:
-        await update.message.delete()
-
-    except Exception as error:
-        print(
-            "Could not delete request message:",
-            repr(error),
-        )
-
-
-def schedule_response_deletion(
+def schedule_message_deletion(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     message_id: int,
 ) -> None:
     """
-    Schedule a temporary bot response for deletion in groups.
+    Schedule a temporary response for deletion in groups.
     """
-    if update.effective_chat.type not in (
-        "group",
-        "supergroup",
-    ):
+    if not is_group_chat(update):
         return
 
     context.application.create_task(
@@ -258,17 +250,115 @@ def schedule_response_deletion(
     )
 
 
+async def delete_command_message(
+    update: Update,
+) -> None:
+    """
+    Delete slash commands in groups.
+
+    Inline menu button presses do not create a user message,
+    so there is nothing to delete for callback queries.
+    """
+    if (
+        not is_group_chat(update)
+        or update.message is None
+    ):
+        return
+
+    try:
+        await update.message.delete()
+
+    except Exception as error:
+        print(
+            "Could not delete command message:",
+            repr(error),
+        )
+
+
+async def acknowledge_button(
+    update: Update,
+) -> None:
+    """
+    Immediately acknowledge an inline button press.
+    """
+    if update.callback_query is not None:
+        try:
+            await update.callback_query.answer()
+
+        except Exception as error:
+            print(
+                "Could not acknowledge callback:",
+                repr(error),
+            )
+
+
+async def send_temporary_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+):
+    """
+    Send a silent temporary message.
+
+    In groups, it is deleted after AUTO_DELETE_SECONDS.
+    """
+    message = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        disable_notification=True,
+    )
+
+    schedule_message_deletion(
+        update,
+        context,
+        message.message_id,
+    )
+
+    return message
+
+
+async def show_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Send the permanent inline menu.
+
+    This message is not automatically deleted.
+    """
+    await delete_command_message(
+        update
+    )
+
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=(
+            "⚡ Керування електропостачанням\n\n"
+            "Натисніть кнопку нижче."
+        ),
+        reply_markup=MENU_KEYBOARD,
+        disable_notification=True,
+    )
+
+
 async def status(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """
-    Send the current electricity status silently.
+    Send the current status silently.
 
-    In groups:
-    - delete the user's request;
-    - delete the bot response after the configured delay.
+    Inline button presses do not send a user message and therefore
+    do not create a group notification.
     """
+    await acknowledge_button(
+        update
+    )
+
+    await delete_command_message(
+        update
+    )
+
     voltage = await asyncio.to_thread(
         get_voltage
     )
@@ -285,22 +375,10 @@ async def status(
             f"🔌 Напруга: {voltage:.1f} В"
         )
 
-    await delete_request_message(
-        update
-    )
-
-    response_message = (
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=text,
-            disable_notification=True,
-        )
-    )
-
-    schedule_response_deletion(
+    await send_temporary_message(
         update,
         context,
-        response_message.message_id,
+        text,
     )
 
 
@@ -309,20 +387,20 @@ async def statistics(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """
-    Retrieve and display statistics for the configured history period.
-
-    Routine statistics messages are sent silently.
+    Retrieve and display statistics for the configured period.
     """
-    await delete_request_message(
+    await acknowledge_button(
         update
     )
 
-    loading_message = (
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="📈 Отримую статистику...",
-            disable_notification=True,
-        )
+    await delete_command_message(
+        update
+    )
+
+    loading_message = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="📈 Отримую статистику...",
+        disable_notification=True,
     )
 
     try:
@@ -399,15 +477,86 @@ async def statistics(
 
         except Exception as edit_error:
             print(
-                "Could not edit statistics error message:",
+                "Could not edit statistics error:",
                 repr(edit_error),
             )
 
-    schedule_response_deletion(
+    schedule_message_deletion(
         update,
         context,
         loading_message.message_id,
     )
+
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Display help silently.
+    """
+    await acknowledge_button(
+        update
+    )
+
+    await delete_command_message(
+        update
+    )
+
+    text = (
+        "🤖 Бот контролю електропостачання\n\n"
+        "🔌 Статус світла — поточний стан і напруга.\n"
+        "📈 Статистика — дані за останні "
+        f"{HISTORY_HOURS} год.\n\n"
+        "Натискання кнопок меню не надсилає "
+        "повідомлення від користувача і не створює "
+        "сповіщення для інших учасників.\n\n"
+        "Повідомлення про відключення та відновлення "
+        "залишаються зі звуком."
+    )
+
+    await send_temporary_message(
+        update,
+        context,
+        text,
+    )
+
+
+async def handle_menu_button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Handle inline menu callback buttons.
+    """
+    query = update.callback_query
+
+    if query is None:
+        return
+
+    if query.data == "status":
+        await status(
+            update,
+            context,
+        )
+
+    elif query.data == "statistics":
+        await statistics(
+            update,
+            context,
+        )
+
+    elif query.data == "help":
+        await help_command(
+            update,
+            context,
+        )
+
+    else:
+        await query.answer(
+            "Невідома команда.",
+            show_alert=False,
+        )
 
 
 def send_from_monitor(
@@ -416,9 +565,9 @@ def send_from_monitor(
     text: str,
 ) -> None:
     """
-    Safely send a Telegram message from the monitoring thread.
+    Safely send an alert from the monitoring thread.
 
-    Outage and restoration alerts are intentionally not silent.
+    Outage and restoration alerts intentionally keep notifications enabled.
     """
     try:
         future = asyncio.run_coroutine_threadsafe(
@@ -446,7 +595,7 @@ def monitor(
     event_loop: asyncio.AbstractEventLoop,
 ) -> None:
     """
-    Monitor voltage and announce confirmed outages and restorations.
+    Monitor voltage and announce confirmed changes.
 
     Interruptions shorter than OUTAGE_CONFIRMATION_SECONDS are ignored.
     """
@@ -530,75 +679,11 @@ def monitor(
         )
 
 
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    """
-    Show the permanent bottom keyboard.
-    """
-    await update.message.reply_text(
-        "⚡ Бот запущено!\n\n"
-        "Використовуйте кнопки нижче.",
-        reply_markup=KEYBOARD,
-        disable_notification=True,
-    )
-
-
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    """
-    Display help and restore the persistent keyboard.
-    """
-    await update.message.reply_text(
-        "🤖 Бот контролю електропостачання\n\n"
-        "• 🔌 Статус світла\n"
-        "• 📈 Статистика за останні 24 години\n"
-        "• /status\n"
-        "• /statistics\n\n"
-        "Звичайні відповіді надсилаються без звуку.\n"
-        "Повідомлення про відключення та "
-        "відновлення залишаються зі звуком.",
-        reply_markup=KEYBOARD,
-        disable_notification=True,
-    )
-
-
-async def keyboard(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    """
-    Handle persistent reply-keyboard buttons.
-    """
-    text = update.message.text
-
-    if text == "🔌 Статус світла":
-        await status(
-            update,
-            context,
-        )
-
-    elif text == "📈 Статистика":
-        await statistics(
-            update,
-            context,
-        )
-
-    elif text == "ℹ️ Допомога":
-        await help_command(
-            update,
-            context,
-        )
-
-
 async def post_init(
     app: Application,
 ) -> None:
     """
-    Start the voltage-monitoring thread after Telegram initialization.
+    Start the voltage-monitoring thread after Telegram initializes.
     """
     event_loop = asyncio.get_running_loop()
 
@@ -630,7 +715,14 @@ def main() -> None:
     app.add_handler(
         CommandHandler(
             "start",
-            start,
+            show_menu,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "menu",
+            show_menu,
         )
     )
 
@@ -656,10 +748,8 @@ def main() -> None:
     )
 
     app.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            keyboard,
+        CallbackQueryHandler(
+            handle_menu_button,
         )
     )
 
