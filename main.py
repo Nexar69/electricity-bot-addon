@@ -5,6 +5,10 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import os
 import json
+from history import (
+    get_history,
+    calculate_statistics,
+)
 
 from telegram import (
     Update,
@@ -133,6 +137,30 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
 
+async def statistics(update, context):
+    history = get_history(
+        HA_URL,
+        SENSOR,
+        headers,
+        24,
+    )
+
+    stats = calculate_statistics(history)
+
+    text = (
+        "📈 Статистика за 24 години\n\n"
+        f"🟢 Час зі світлом: {stats['uptime']}\n"
+        f"🔴 Час без світла: {stats['downtime']}\n"
+        f"⚡ Середня напруга: {stats['average_voltage']:.1f} В\n"
+        f"⬆ Максимум: {stats['max_voltage']:.1f} В\n"
+        f"⬇ Мінімум: {stats['min_voltage']:.1f} В\n"
+        f"🔌 Відключень: {stats['outages']}"
+    )
+
+    await update.message.reply_text(
+        text,
+        reply_markup=KEYBOARD,
+    )
 
 async def delete_after_delay(context, chat_id, message_id):
     import asyncio
@@ -262,6 +290,13 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
 
+    app.add_handler(
+        CommandHandler(
+            "statistics",
+            statistics,
+        )
+    )
+    
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
