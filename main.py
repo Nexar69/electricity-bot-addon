@@ -1,18 +1,18 @@
 import asyncio
 import json
+import os
 import threading
 import time
 
 import requests
 
+from chart import create_statistics_chart
 from history import (
     calculate_statistics,
     get_history,
 )
 
 from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     Update,
 )
 
@@ -89,39 +89,12 @@ HEADERS = {
 }
 
 
-MENU_KEYBOARD = InlineKeyboardMarkup(
-    [
-        [
-            InlineKeyboardButton(
-                "🔌 Статус світла",
-                callback_data="status",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📈 Статистика",
-                callback_data="statistics",
-            ),
-            InlineKeyboardButton(
-                "ℹ️ Допомога",
-                callback_data="help",
-            ),
-        ],
-    ]
-)
-
-
 last_state = None
 outage_start = None
 outage_announced = False
 
 
 def get_voltage() -> float:
-    """
-    Get the current voltage from Home Assistant.
-
-    unavailable and unknown states are treated as 0 V.
-    """
     try:
         response = requests.get(
             HA_URL + SENSOR,
@@ -164,9 +137,6 @@ def get_voltage() -> float:
 
 
 def format_duration(seconds: int) -> str:
-    """
-    Convert seconds to a Ukrainian duration string.
-    """
     seconds = max(
         0,
         int(seconds),
@@ -210,9 +180,6 @@ async def delete_after_delay(
     chat_id: int,
     message_id: int,
 ) -> None:
-    """
-    Delete a Telegram message after the configured delay.
-    """
     await asyncio.sleep(
         AUTO_DELETE_SECONDS
     )
@@ -235,9 +202,6 @@ def schedule_message_deletion(
     context: ContextTypes.DEFAULT_TYPE,
     message_id: int,
 ) -> None:
-    """
-    Schedule a temporary response for deletion in groups.
-    """
     if not is_group_chat(update):
         return
 
@@ -253,12 +217,6 @@ def schedule_message_deletion(
 async def delete_command_message(
     update: Update,
 ) -> None:
-    """
-    Delete slash commands in groups.
-
-    Inline menu button presses do not create a user message,
-    so there is nothing to delete for callback queries.
-    """
     if (
         not is_group_chat(update)
         or update.message is None
@@ -278,18 +236,17 @@ async def delete_command_message(
 async def acknowledge_button(
     update: Update,
 ) -> None:
-    """
-    Immediately acknowledge an inline button press.
-    """
-    if update.callback_query is not None:
-        try:
-            await update.callback_query.answer()
+    if update.callback_query is None:
+        return
 
-        except Exception as error:
-            print(
-                "Could not acknowledge callback:",
-                repr(error),
-            )
+    try:
+        await update.callback_query.answer()
+
+    except Exception as error:
+        print(
+            "Could not acknowledge callback:",
+            repr(error),
+        )
 
 
 async def send_temporary_message(
@@ -297,11 +254,6 @@ async def send_temporary_message(
     context: ContextTypes.DEFAULT_TYPE,
     text: str,
 ):
-    """
-    Send a silent temporary message.
-
-    In groups, it is deleted after AUTO_DELETE_SECONDS.
-    """
     message = await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=text,
@@ -317,27 +269,26 @@ async def send_temporary_message(
     return message
 
 
-async def show_menu(
+async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """
-    Send the permanent inline menu.
+    Do not create another menu.
 
-    This message is not automatically deleted.
+    The group uses the already-pinned inline menu.
     """
     await delete_command_message(
         update
     )
 
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=(
-            "⚡ Керування електропостачанням\n\n"
-            "Натисніть кнопку нижче."
+    await send_temporary_message(
+        update,
+        context,
+        (
+            "📌 Використовуйте закріплене "
+            "повідомлення з меню бота."
         ),
-        reply_markup=MENU_KEYBOARD,
-        disable_notification=True,
     )
 
 
@@ -345,12 +296,6 @@ async def status(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """
-    Send the current status silently.
-
-    Inline button presses do not send a user message and therefore
-    do not create a group notification.
-    """
     await acknowledge_button(
         update
     )
@@ -386,9 +331,6 @@ async def statistics(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """
-    Retrieve and display statistics for the configured period.
-    """
     await acknowledge_button(
         update
     )
@@ -399,9 +341,11 @@ async def statistics(
 
     loading_message = await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="📈 Отримую статистику...",
+        text="📈 Створюю графік...",
         disable_notification=True,
     )
+
+    chart_path = None
 
     try:
         history = await asyncio.to_thread(
@@ -412,6 +356,22 @@ async def statistics(
             HISTORY_HOURS,
         )
 
+        if not history:
+            await loading_message.edit_text(
+                "⚠️ Не вдалося отримати історію "
+                "з Home Assistant.\n\n"
+                "Перевірте, чи Recorder зберігає "
+                "історію цього сенсора."
+            )
+
+            schedule_message_deletion(
+                update,
+                context,
+                loading_message.message_id,
+            )
+
+            return
+
         stats = await asyncio.to_thread(
             calculate_statistics,
             history,
@@ -419,79 +379,102 @@ async def statistics(
             LOW_VOLTAGE_THRESHOLD,
         )
 
-        if not history:
-            text = (
-                "⚠️ Не вдалося отримати історію "
-                "з Home Assistant.\n\n"
-                "Перевірте, чи Recorder зберігає "
-                "історію цього сенсора."
+        chart_path = await asyncio.to_thread(
+            create_statistics_chart,
+            history,
+            stats,
+            OFF_VOLTAGE,
+            LOW_VOLTAGE_THRESHOLD,
+            HISTORY_HOURS,
+        )
+
+        caption = (
+            f"📈 Статистика за останні "
+            f"{HISTORY_HOURS} год\n\n"
+            f"🟢 З електропостачанням: "
+            f"{stats['uptime']}\n"
+            f"🔴 Без електропостачання: "
+            f"{stats['downtime']}\n"
+            f"📊 Доступність: "
+            f"{stats['uptime_percent']:.2f}%\n\n"
+            f"🟢 Середня при наявності: "
+            f"{stats['average_on_voltage']:.1f} В\n"
+            f"⬆ Максимальна: "
+            f"{stats['max_voltage']:.1f} В\n"
+            f"⬇ Мінімальна: "
+            f"{stats['min_voltage']:.1f} В\n\n"
+            f"🔌 Відключень: "
+            f"{stats['outages']}\n"
+            f"⚠️ Подій низької напруги: "
+            f"{stats['low_voltage_events']}"
+        )
+
+        try:
+            await loading_message.delete()
+        except Exception:
+            pass
+
+        with open(
+            chart_path,
+            "rb",
+        ) as chart_file:
+            chart_message = (
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id,
+                    photo=chart_file,
+                    caption=caption,
+                    disable_notification=True,
+                )
             )
 
-        else:
-            text = (
-                f"📈 Статистика за останні "
-                f"{HISTORY_HOURS} год\n\n"
-
-                f"🟢 Час з електропостачанням: "
-                f"{stats['uptime']}\n"
-
-                f"🔴 Час без електропостачання: "
-                f"{stats['downtime']}\n"
-
-                f"📊 Доступність: "
-                f"{stats['uptime_percent']:.2f}%\n\n"
-
-                f"🟢 Середня при наявності: "
-                f"{stats['average_on_voltage']:.1f} В\n"
-
-                f"⬆ Максимальна напруга: "
-                f"{stats['max_voltage']:.1f} В\n"
-
-                f"⬇ Мінімальна напруга: "
-                f"{stats['min_voltage']:.1f} В\n\n"
-
-                f"🔌 Відключень: "
-                f"{stats['outages']}\n"
-
-                f"⚠️ Подій низької напруги: "
-                f"{stats['low_voltage_events']}"
-            )
-
-        await loading_message.edit_text(
-            text
+        schedule_message_deletion(
+            update,
+            context,
+            chart_message.message_id,
         )
 
     except Exception as error:
         print(
-            "Statistics error:",
+            "Statistics chart error:",
             repr(error),
         )
 
         try:
             await loading_message.edit_text(
-                "⚠️ Помилка під час отримання статистики."
+                "⚠️ Помилка під час створення графіка."
+            )
+
+            schedule_message_deletion(
+                update,
+                context,
+                loading_message.message_id,
             )
 
         except Exception as edit_error:
             print(
-                "Could not edit statistics error:",
+                "Could not edit chart error message:",
                 repr(edit_error),
             )
 
-    schedule_message_deletion(
-        update,
-        context,
-        loading_message.message_id,
-    )
+    finally:
+        if (
+            chart_path
+            and os.path.exists(chart_path)
+        ):
+            try:
+                os.remove(chart_path)
+
+            except OSError as error:
+                print(
+                    "Could not remove temporary chart:",
+                    repr(error),
+                )
 
 
 async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """
-    Display help silently.
-    """
     await acknowledge_button(
         update
     )
@@ -500,22 +483,17 @@ async def help_command(
         update
     )
 
-    text = (
-        "🤖 Бот контролю електропостачання\n\n"
-        "🔌 Статус світла — поточний стан і напруга.\n"
-        "📈 Статистика — дані за останні "
-        f"{HISTORY_HOURS} год.\n\n"
-        "Натискання кнопок меню не надсилає "
-        "повідомлення від користувача і не створює "
-        "сповіщення для інших учасників.\n\n"
-        "Повідомлення про відключення та відновлення "
-        "залишаються зі звуком."
-    )
-
     await send_temporary_message(
         update,
         context,
-        text,
+        (
+            "🤖 Бот контролю електропостачання\n\n"
+            "🔌 Статус — поточний стан і напруга.\n"
+            "📈 Статистика — PNG-графік та дані "
+            f"за останні {HISTORY_HOURS} год.\n\n"
+            "Для керування використовуйте "
+            "закріплене повідомлення."
+        ),
     )
 
 
@@ -523,9 +501,6 @@ async def handle_menu_button(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """
-    Handle inline menu callback buttons.
-    """
     query = update.callback_query
 
     if query is None:
@@ -561,11 +536,6 @@ def send_from_monitor(
     event_loop: asyncio.AbstractEventLoop,
     text: str,
 ) -> None:
-    """
-    Safely send an alert from the monitoring thread.
-
-    Outage and restoration alerts intentionally keep notifications enabled.
-    """
     try:
         future = asyncio.run_coroutine_threadsafe(
             app.bot.send_message(
@@ -591,11 +561,6 @@ def monitor(
     app: Application,
     event_loop: asyncio.AbstractEventLoop,
 ) -> None:
-    """
-    Monitor voltage and announce confirmed changes.
-
-    Interruptions shorter than OUTAGE_CONFIRMATION_SECONDS are ignored.
-    """
     global last_state
     global outage_start
     global outage_announced
@@ -679,9 +644,6 @@ def monitor(
 async def post_init(
     app: Application,
 ) -> None:
-    """
-    Start the voltage-monitoring thread after Telegram initializes.
-    """
     event_loop = asyncio.get_running_loop()
 
     monitoring_thread = threading.Thread(
@@ -712,14 +674,7 @@ def main() -> None:
     app.add_handler(
         CommandHandler(
             "start",
-            show_menu,
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "menu",
-            show_menu,
+            start_command,
         )
     )
 
