@@ -26,6 +26,7 @@ from telegram.ext import (
 
 CONFIG_PATH = "/data/options.json"
 
+
 with open(
     CONFIG_PATH,
     encoding="utf-8",
@@ -70,9 +71,17 @@ AUTO_DELETE_SECONDS = int(
     )
 )
 
-HA_URL = (
-    "http://homeassistant:8123/api/states/"
+OUTAGE_CONFIRMATION_SECONDS = int(
+    config.get(
+        "outage_confirmation_seconds",
+        10,
+    )
 )
+
+CHECK_INTERVAL_SECONDS = 5
+
+HA_URL = "http://homeassistant:8123/api/states/"
+
 
 HEADERS = {
     "Authorization": f"Bearer {HA_TOKEN}",
@@ -101,6 +110,11 @@ outage_announced = False
 
 
 def get_voltage() -> float:
+    """
+    Get the current voltage from Home Assistant.
+
+    unavailable and unknown states are treated as 0 V.
+    """
     try:
         response = requests.get(
             HA_URL + SENSOR,
@@ -142,11 +156,46 @@ def get_voltage() -> float:
         return 0.0
 
 
+def format_duration(seconds: int) -> str:
+    """
+    Convert seconds to a Ukrainian duration string.
+    """
+    seconds = max(0, int(seconds))
+
+    hours, remainder = divmod(
+        seconds,
+        3600,
+    )
+
+    minutes, remaining_seconds = divmod(
+        remainder,
+        60,
+    )
+
+    if hours:
+        return (
+            f"{hours} год "
+            f"{minutes} хв "
+            f"{remaining_seconds} с"
+        )
+
+    if minutes:
+        return (
+            f"{minutes} хв "
+            f"{remaining_seconds} с"
+        )
+
+    return f"{remaining_seconds} с"
+
+
 async def delete_after_delay(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
     message_id: int,
 ) -> None:
+    """
+    Delete a Telegram message after the configured delay.
+    """
     await asyncio.sleep(
         AUTO_DELETE_SECONDS
     )
@@ -157,15 +206,19 @@ async def delete_after_delay(
             message_id=message_id,
         )
 
-    except Exception:
-        pass
+    except Exception as error:
+        print(
+            "Could not delete temporary message:",
+            repr(error),
+        )
 
 
-async def schedule_temporary_deletion(
+async def delete_request_message(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    response_message,
 ) -> None:
+    """
+    Delete the user's command or keyboard-button message in groups.
+    """
     if update.effective_chat.type not in (
         "group",
         "supergroup",
@@ -175,14 +228,32 @@ async def schedule_temporary_deletion(
     try:
         await update.message.delete()
 
-    except Exception:
-        pass
+    except Exception as error:
+        print(
+            "Could not delete request message:",
+            repr(error),
+        )
+
+
+def schedule_response_deletion(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message_id: int,
+) -> None:
+    """
+    Schedule a temporary bot response for deletion in groups.
+    """
+    if update.effective_chat.type not in (
+        "group",
+        "supergroup",
+    ):
+        return
 
     context.application.create_task(
         delete_after_delay(
             context,
             update.effective_chat.id,
-            response_message.message_id,
+            message_id,
         )
     )
 
@@ -191,7 +262,16 @@ async def status(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    voltage = get_voltage()
+    """
+    Send the current electricity status silently.
+
+    In groups:
+    - delete the user's request;
+    - delete the bot response after the configured delay.
+    """
+    voltage = await asyncio.to_thread(
+        get_voltage
+    )
 
     if voltage >= OFF_VOLTAGE:
         text = (
@@ -205,17 +285,22 @@ async def status(
             f"🔌 Напруга: {voltage:.1f} В"
         )
 
+    await delete_request_message(
+        update
+    )
+
     response_message = (
-        await update.message.reply_text(
-            text,
-            reply_markup=KEYBOARD,
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text,
+            disable_notification=True,
         )
     )
 
-    await schedule_temporary_deletion(
+    schedule_response_deletion(
         update,
         context,
-        response_message,
+        response_message.message_id,
     )
 
 
@@ -223,24 +308,22 @@ async def statistics(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    is_group = update.effective_chat.type in (
-        "group",
-        "supergroup",
+    """
+    Retrieve and display statistics for the configured history period.
+
+    Routine statistics messages are sent silently.
+    """
+    await delete_request_message(
+        update
     )
 
-    loading_message = await update.message.reply_text(
-        "📈 Отримую статистику..."
+    loading_message = (
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="📈 Отримую статистику...",
+            disable_notification=True,
+        )
     )
-
-    # Delete the user's command/button message immediately in groups.
-    if is_group:
-        try:
-            await update.message.delete()
-        except Exception as error:
-            print(
-                "Could not delete statistics request:",
-                repr(error),
-            )
 
     try:
         history = await asyncio.to_thread(
@@ -265,32 +348,43 @@ async def statistics(
                 "Перевірте, чи Recorder зберігає "
                 "історію цього сенсора."
             )
+
         else:
             text = (
                 f"📈 Статистика за останні "
                 f"{HISTORY_HOURS} год\n\n"
+
                 f"🟢 Час з електропостачанням: "
                 f"{stats['uptime']}\n"
+
                 f"🔴 Час без електропостачання: "
                 f"{stats['downtime']}\n"
+
                 f"📊 Доступність: "
                 f"{stats['uptime_percent']:.2f}%\n\n"
+
                 f"⚡ Середня напруга: "
                 f"{stats['average_voltage']:.1f} В\n"
+
                 f"🟢 Середня при наявності: "
                 f"{stats['average_on_voltage']:.1f} В\n"
+
                 f"⬆ Максимальна напруга: "
                 f"{stats['max_voltage']:.1f} В\n"
+
                 f"⬇ Мінімальна напруга: "
                 f"{stats['min_voltage']:.1f} В\n\n"
+
                 f"🔌 Відключень: "
                 f"{stats['outages']}\n"
+
                 f"⚠️ Подій низької напруги: "
                 f"{stats['low_voltage_events']}"
             )
 
-        # Do not put KEYBOARD here.
-        await loading_message.edit_text(text)
+        await loading_message.edit_text(
+            text
+        )
 
     except Exception as error:
         print(
@@ -302,21 +396,60 @@ async def statistics(
             await loading_message.edit_text(
                 "⚠️ Помилка під час отримання статистики."
             )
-        except Exception:
-            pass
 
-    # Delete the finished statistics message after 20 seconds in groups.
-    if is_group:
-        context.application.create_task(
-            delete_after_delay(
-                context,
-                update.effective_chat.id,
-                loading_message.message_id,
+        except Exception as edit_error:
+            print(
+                "Could not edit statistics error message:",
+                repr(edit_error),
             )
+
+    schedule_response_deletion(
+        update,
+        context,
+        loading_message.message_id,
+    )
+
+
+def send_from_monitor(
+    app: Application,
+    event_loop: asyncio.AbstractEventLoop,
+    text: str,
+) -> None:
+    """
+    Safely send a Telegram message from the monitoring thread.
+
+    Outage and restoration alerts are intentionally not silent.
+    """
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            app.bot.send_message(
+                chat_id=CHAT_ID,
+                text=text,
+                disable_notification=False,
+            ),
+            event_loop,
+        )
+
+        future.result(
+            timeout=20
+        )
+
+    except Exception as error:
+        print(
+            "Telegram monitor error:",
+            repr(error),
         )
 
 
-def monitor(app: Application) -> None:
+def monitor(
+    app: Application,
+    event_loop: asyncio.AbstractEventLoop,
+) -> None:
+    """
+    Monitor voltage and announce confirmed outages and restorations.
+
+    Interruptions shorter than OUTAGE_CONFIRMATION_SECONDS are ignored.
+    """
     global last_state
     global outage_start
     global outage_announced
@@ -327,7 +460,15 @@ def monitor(app: Application) -> None:
 
         if last_state is None:
             last_state = power
-            time.sleep(5)
+
+            if not power:
+                outage_start = time.time()
+                outage_announced = False
+
+            time.sleep(
+                CHECK_INTERVAL_SECONDS
+            )
+
             continue
 
         if not power:
@@ -335,99 +476,93 @@ def monitor(app: Application) -> None:
                 outage_start = time.time()
                 outage_announced = False
 
-            duration = (
+            outage_duration = (
                 time.time()
                 - outage_start
             )
 
             if (
-                duration >= 10
+                outage_duration
+                >= OUTAGE_CONFIRMATION_SECONDS
                 and not outage_announced
             ):
-                try:
-                    app.bot.send_message(
-                        chat_id=CHAT_ID,
-                        text=(
-                            "🔴 Електропостачання відсутнє\n\n"
-                            f"🔌 Напруга: {voltage:.1f} В"
-                        ),
-                        reply_markup=KEYBOARD,
-                    )
+                send_from_monitor(
+                    app,
+                    event_loop,
+                    (
+                        "🔴 Електропостачання відсутнє\n\n"
+                        f"🔌 Напруга: {voltage:.1f} В"
+                    ),
+                )
 
-                    outage_announced = True
-
-                except Exception as error:
-                    print(
-                        "Telegram error:",
-                        repr(error),
-                    )
+                outage_announced = True
 
         else:
             if outage_start is not None:
-                duration = int(
+                outage_duration = int(
                     time.time()
                     - outage_start
                 )
 
                 if outage_announced:
-                    hours = duration // 3600
-                    minutes = (
-                        duration % 3600
-                    ) // 60
-                    seconds = duration % 60
+                    duration_text = format_duration(
+                        outage_duration
+                    )
 
-                    if hours:
-                        duration_text = (
-                            f"{hours} год "
-                            f"{minutes} хв "
-                            f"{seconds} с"
-                        )
-
-                    elif minutes:
-                        duration_text = (
-                            f"{minutes} хв "
-                            f"{seconds} с"
-                        )
-
-                    else:
-                        duration_text = (
-                            f"{seconds} с"
-                        )
-
-                    try:
-                        app.bot.send_message(
-                            chat_id=CHAT_ID,
-                            text=(
-                                "🟢 Електропостачання відновлено\n\n"
-                                "⏱ Тривалість відключення: "
-                                f"{duration_text}\n"
-                                f"🔌 Напруга: {voltage:.1f} В"
-                            ),
-                            reply_markup=KEYBOARD,
-                        )
-
-                    except Exception as error:
-                        print(
-                            "Telegram error:",
-                            repr(error),
-                        )
+                    send_from_monitor(
+                        app,
+                        event_loop,
+                        (
+                            "🟢 Електропостачання відновлено\n\n"
+                            "⏱ Тривалість відключення: "
+                            f"{duration_text}\n"
+                            f"🔌 Напруга: {voltage:.1f} В"
+                        ),
+                    )
 
                 outage_start = None
                 outage_announced = False
 
         last_state = power
 
-        time.sleep(5)
+        time.sleep(
+            CHECK_INTERVAL_SECONDS
+        )
 
 
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    """
+    Show the permanent bottom keyboard.
+    """
     await update.message.reply_text(
         "⚡ Бот запущено!\n\n"
         "Використовуйте кнопки нижче.",
         reply_markup=KEYBOARD,
+        disable_notification=True,
+    )
+
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Display help and restore the persistent keyboard.
+    """
+    await update.message.reply_text(
+        "🤖 Бот контролю електропостачання\n\n"
+        "• 🔌 Статус світла\n"
+        "• 📈 Статистика за останні 24 години\n"
+        "• /status\n"
+        "• /statistics\n\n"
+        "Звичайні відповіді надсилаються без звуку.\n"
+        "Повідомлення про відключення та "
+        "відновлення залишаються зі звуком.",
+        reply_markup=KEYBOARD,
+        disable_notification=True,
     )
 
 
@@ -435,6 +570,9 @@ async def keyboard(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    """
+    Handle persistent reply-keyboard buttons.
+    """
     text = update.message.text
 
     if text == "🔌 Статус світла":
@@ -450,23 +588,42 @@ async def keyboard(
         )
 
     elif text == "ℹ️ Допомога":
-        await update.message.reply_text(
-            "🤖 Бот контролю електропостачання\n\n"
-            "• 🔌 Статус світла\n"
-            "• 📈 Статистика за останні 24 години\n"
-            "• /status\n"
-            "• /statistics\n\n"
-            "Бот автоматично повідомляє про "
-            "відсутність і відновлення "
-            "електропостачання.",
-            reply_markup=KEYBOARD,
+        await help_command(
+            update,
+            context,
         )
+
+
+async def post_init(
+    app: Application,
+) -> None:
+    """
+    Start the voltage-monitoring thread after Telegram initialization.
+    """
+    event_loop = asyncio.get_running_loop()
+
+    monitoring_thread = threading.Thread(
+        target=monitor,
+        args=(
+            app,
+            event_loop,
+        ),
+        daemon=True,
+        name="electricity-monitor",
+    )
+
+    monitoring_thread.start()
+
+    print(
+        "Electricity monitoring thread started."
+    )
 
 
 def main() -> None:
     app = (
         Application.builder()
         .token(BOT_TOKEN)
+        .post_init(post_init)
         .build()
     )
 
@@ -492,18 +649,19 @@ def main() -> None:
     )
 
     app.add_handler(
+        CommandHandler(
+            "help",
+            help_command,
+        )
+    )
+
+    app.add_handler(
         MessageHandler(
             filters.TEXT
             & ~filters.COMMAND,
             keyboard,
         )
     )
-
-    threading.Thread(
-        target=monitor,
-        args=(app,),
-        daemon=True,
-    ).start()
 
     app.run_polling()
 
