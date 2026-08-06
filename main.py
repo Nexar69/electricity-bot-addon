@@ -7,35 +7,18 @@ import time
 import requests
 
 from chart import create_statistics_chart
-from history import (
-    calculate_statistics,
-    get_history,
-)
-
-from telegram import (
-    Update,
-)
-
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-)
-
+from history import calculate_statistics, get_history
+from telegram import InputMediaPhoto
+from telegram.ext import Application
 
 CONFIG_PATH = "/data/options.json"
+STATE_PATH = "/data/dashboard_state.json"
 
-
-with open(
-    CONFIG_PATH,
-    encoding="utf-8",
-) as config_file:
+with open(CONFIG_PATH, encoding="utf-8") as config_file:
     config = json.load(config_file)
 
-
 BOT_TOKEN = config["telegram_token"]
-CHAT_ID = config["chat_id"]
+CHAT_ID = int(config["chat_id"])
 HA_TOKEN = config["ha_token"]
 
 SENSOR = config.get(
@@ -43,55 +26,46 @@ SENSOR = config.get(
     "sensor.huawei_grid_voltage_l1",
 )
 
-OFF_VOLTAGE = float(
-    config.get(
-        "off_voltage",
-        150,
-    )
+OFF_VOLTAGE = float(config.get("off_voltage", 150))
+LOW_VOLTAGE_THRESHOLD = float(config.get("low_voltage_threshold", 200))
+HISTORY_HOURS = int(config.get("history_hours", 24))
+DASHBOARD_UPDATE_MINUTES = max(
+    1,
+    int(config.get("dashboard_update_minutes", 5)),
 )
-
-LOW_VOLTAGE_THRESHOLD = float(
-    config.get(
-        "low_voltage_threshold",
-        200,
-    )
+OUTAGE_CONFIRMATION_SECONDS = max(
+    1,
+    int(config.get("outage_confirmation_seconds", 10)),
 )
-
-HISTORY_HOURS = int(
-    config.get(
-        "history_hours",
-        24,
-    )
-)
-
-AUTO_DELETE_SECONDS = int(
-    config.get(
-        "auto_delete_seconds",
-        20,
-    )
-)
-
-OUTAGE_CONFIRMATION_SECONDS = int(
-    config.get(
-        "outage_confirmation_seconds",
-        10,
-    )
-)
-
 CHECK_INTERVAL_SECONDS = 5
-
 HA_URL = "http://homeassistant:8123/api/states/"
-
 
 HEADERS = {
     "Authorization": f"Bearer {HA_TOKEN}",
     "Content-Type": "application/json",
 }
 
-
 last_state = None
 outage_start = None
 outage_announced = False
+
+
+def load_dashboard_state() -> dict:
+    try:
+        with open(STATE_PATH, encoding="utf-8") as state_file:
+            data = json.load(state_file)
+        if isinstance(data, dict):
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def save_dashboard_state(state: dict) -> None:
+    temporary_path = f"{STATE_PATH}.tmp"
+    with open(temporary_path, "w", encoding="utf-8") as state_file:
+        json.dump(state, state_file)
+    os.replace(temporary_path, STATE_PATH)
 
 
 def get_voltage() -> float:
@@ -101,250 +75,94 @@ def get_voltage() -> float:
             headers=HEADERS,
             timeout=10,
         )
-
         response.raise_for_status()
-
-        data = response.json()
-
-        state = str(
-            data.get(
-                "state",
-                "unknown",
-            )
-        ).strip().lower()
-
-        if state in (
-            "unavailable",
-            "unknown",
-            "none",
-            "",
-        ):
+        state = str(response.json().get("state", "unknown")).strip().lower()
+        if state in {"unavailable", "unknown", "none", ""}:
             return 0.0
-
         return float(state)
-
-    except (
-        requests.RequestException,
-        ValueError,
-        KeyError,
-    ) as error:
-        print(
-            "HA error:",
-            repr(error),
-        )
-
+    except (requests.RequestException, ValueError, KeyError) as error:
+        print("HA error:", repr(error))
         return 0.0
 
 
 def format_duration(seconds: int) -> str:
-    seconds = max(
-        0,
-        int(seconds),
-    )
-
-    hours, remainder = divmod(
-        seconds,
-        3600,
-    )
-
-    minutes, remaining_seconds = divmod(
-        remainder,
-        60,
-    )
-
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
     if hours:
-        return (
-            f"{hours} год "
-            f"{minutes} хв "
-            f"{remaining_seconds} с"
-        )
-
+        return f"{hours} год {minutes} хв {remaining_seconds} с"
     if minutes:
-        return (
-            f"{minutes} хв "
-            f"{remaining_seconds} с"
-        )
-
+        return f"{minutes} хв {remaining_seconds} с"
     return f"{remaining_seconds} с"
 
 
-def is_group_chat(update: Update) -> bool:
-    return update.effective_chat.type in (
-        "group",
-        "supergroup",
+def build_status_text(voltage: float) -> str:
+    timestamp = time.strftime("%d.%m.%Y %H:%M")
+    if voltage >= OFF_VOLTAGE:
+        return (
+            "🟢 Електропостачання відновлено\n\n"
+            f"🔌 Напруга: {voltage:.1f} В\n"
+            f"🕒 Оновлено: {timestamp}"
+        )
+    return (
+        "🔴 Електропостачання відсутнє\n\n"
+        f"🔌 Напруга: {voltage:.1f} В\n"
+        f"🕒 Оновлено: {timestamp}"
     )
 
 
-async def delete_after_delay(
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    message_id: int,
-) -> None:
-    await asyncio.sleep(
-        AUTO_DELETE_SECONDS
-    )
-
-    try:
-        await context.bot.delete_message(
-            chat_id=chat_id,
-            message_id=message_id,
-        )
-
-    except Exception as error:
-        print(
-            "Could not delete temporary message:",
-            repr(error),
-        )
-
-
-def schedule_message_deletion(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    message_id: int,
-) -> None:
-    if not is_group_chat(update):
-        return
-
-    context.application.create_task(
-        delete_after_delay(
-            context,
-            update.effective_chat.id,
-            message_id,
-        )
+def build_chart_caption(stats: dict) -> str:
+    timestamp = time.strftime("%d.%m.%Y %H:%M")
+    return (
+        f"📈 Статистика за останні {HISTORY_HOURS} год\n\n"
+        f"🟢 З електропостачанням: {stats['uptime']}\n"
+        f"🔴 Без електропостачання: {stats['downtime']}\n"
+        f"📊 Доступність: {stats['uptime_percent']:.2f}%\n\n"
+        f"🟢 Середня при наявності: {stats['average_on_voltage']:.1f} В\n"
+        f"⬆ Максимальна: {stats['max_voltage']:.1f} В\n"
+        f"⬇ Мінімальна: {stats['min_voltage']:.1f} В\n\n"
+        f"🔌 Відключень: {stats['outages']}\n"
+        f"⚠️ Подій низької напруги: {stats['low_voltage_events']}\n"
+        f"🕒 Оновлено: {timestamp}"
     )
 
 
-async def delete_command_message(
-    update: Update,
-) -> None:
-    if (
-        not is_group_chat(update)
-        or update.message is None
-    ):
-        return
+async def ensure_status_message(app: Application, state: dict) -> None:
+    voltage = await asyncio.to_thread(get_voltage)
+    text = build_status_text(voltage)
+    message_id = state.get("status_message_id")
 
-    try:
-        await update.message.delete()
+    if message_id:
+        try:
+            await app.bot.edit_message_text(
+                chat_id=CHAT_ID,
+                message_id=message_id,
+                text=text,
+            )
+            return
+        except Exception as error:
+            print("Could not edit status dashboard:", repr(error))
 
-    except Exception as error:
-        print(
-            "Could not delete command message:",
-            repr(error),
-        )
-
-
-async def acknowledge_button(
-    update: Update,
-) -> None:
-    if update.callback_query is None:
-        return
-
-    try:
-        await update.callback_query.answer()
-
-    except Exception as error:
-        print(
-            "Could not acknowledge callback:",
-            repr(error),
-        )
-
-
-async def send_temporary_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    text: str,
-):
-    message = await context.bot.send_message(
-        chat_id=update.effective_chat.id,
+    message = await app.bot.send_message(
+        chat_id=CHAT_ID,
         text=text,
         disable_notification=True,
     )
 
-    schedule_message_deletion(
-        update,
-        context,
-        message.message_id,
-    )
-
-    return message
-
-
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    """
-    Do not create another menu.
-
-    The group uses the already-pinned inline menu.
-    """
-    await delete_command_message(
-        update
-    )
-
-    await send_temporary_message(
-        update,
-        context,
-        (
-            "📌 Використовуйте закріплене "
-            "повідомлення з меню бота."
-        ),
-    )
-
-
-async def status(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    await acknowledge_button(
-        update
-    )
-
-    await delete_command_message(
-        update
-    )
-
-    voltage = await asyncio.to_thread(
-        get_voltage
-    )
-
-    if voltage >= OFF_VOLTAGE:
-        text = (
-            "🟢 Електропостачання відновлено\n\n"
-            f"🔌 Напруга: {voltage:.1f} В"
+    try:
+        await app.bot.pin_chat_message(
+            chat_id=CHAT_ID,
+            message_id=message.message_id,
+            disable_notification=True,
         )
+    except Exception as error:
+        print("Could not pin status dashboard:", repr(error))
 
-    else:
-        text = (
-            "🔴 Електропостачання відсутнє\n\n"
-            f"🔌 Напруга: {voltage:.1f} В"
-        )
-
-    await send_temporary_message(
-        update,
-        context,
-        text,
-    )
+    state["status_message_id"] = message.message_id
+    save_dashboard_state(state)
 
 
-async def statistics(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    await acknowledge_button(
-        update
-    )
-
-    await delete_command_message(
-        update
-    )
-
-    loading_message = await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="📈 Створюю графік...",
-        disable_notification=True,
-    )
-
+async def ensure_chart_message(app: Application, state: dict) -> None:
     chart_path = None
 
     try:
@@ -357,19 +175,7 @@ async def statistics(
         )
 
         if not history:
-            await loading_message.edit_text(
-                "⚠️ Не вдалося отримати історію "
-                "з Home Assistant.\n\n"
-                "Перевірте, чи Recorder зберігає "
-                "історію цього сенсора."
-            )
-
-            schedule_message_deletion(
-                update,
-                context,
-                loading_message.message_id,
-            )
-
+            print("No history available for chart dashboard.")
             return
 
         stats = await asyncio.to_thread(
@@ -388,147 +194,63 @@ async def statistics(
             HISTORY_HOURS,
         )
 
-        caption = (
-            f"📈 Статистика за останні "
-            f"{HISTORY_HOURS} год\n\n"
-            f"🟢 З електропостачанням: "
-            f"{stats['uptime']}\n"
-            f"🔴 Без електропостачання: "
-            f"{stats['downtime']}\n"
-            f"📊 Доступність: "
-            f"{stats['uptime_percent']:.2f}%\n\n"
-            f"🟢 Середня при наявності: "
-            f"{stats['average_on_voltage']:.1f} В\n"
-            f"⬆ Максимальна: "
-            f"{stats['max_voltage']:.1f} В\n"
-            f"⬇ Мінімальна: "
-            f"{stats['min_voltage']:.1f} В\n\n"
-            f"🔌 Відключень: "
-            f"{stats['outages']}\n"
-            f"⚠️ Подій низької напруги: "
-            f"{stats['low_voltage_events']}"
-        )
+        caption = build_chart_caption(stats)
+        message_id = state.get("chart_message_id")
+
+        if message_id:
+            try:
+                with open(chart_path, "rb") as chart_file:
+                    await app.bot.edit_message_media(
+                        chat_id=CHAT_ID,
+                        message_id=message_id,
+                        media=InputMediaPhoto(
+                            media=chart_file,
+                            caption=caption,
+                        ),
+                    )
+                return
+            except Exception as error:
+                print("Could not edit chart dashboard:", repr(error))
+
+        with open(chart_path, "rb") as chart_file:
+            message = await app.bot.send_photo(
+                chat_id=CHAT_ID,
+                photo=chart_file,
+                caption=caption,
+                disable_notification=True,
+            )
 
         try:
-            await loading_message.delete()
-        except Exception:
-            pass
-
-        with open(
-            chart_path,
-            "rb",
-        ) as chart_file:
-            chart_message = (
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id,
-                    photo=chart_file,
-                    caption=caption,
-                    disable_notification=True,
-                )
+            await app.bot.pin_chat_message(
+                chat_id=CHAT_ID,
+                message_id=message.message_id,
+                disable_notification=True,
             )
+        except Exception as error:
+            print("Could not pin chart dashboard:", repr(error))
 
-        schedule_message_deletion(
-            update,
-            context,
-            chart_message.message_id,
-        )
-
-    except Exception as error:
-        print(
-            "Statistics chart error:",
-            repr(error),
-        )
-
-        try:
-            await loading_message.edit_text(
-                "⚠️ Помилка під час створення графіка."
-            )
-
-            schedule_message_deletion(
-                update,
-                context,
-                loading_message.message_id,
-            )
-
-        except Exception as edit_error:
-            print(
-                "Could not edit chart error message:",
-                repr(edit_error),
-            )
+        state["chart_message_id"] = message.message_id
+        save_dashboard_state(state)
 
     finally:
-        if (
-            chart_path
-            and os.path.exists(chart_path)
-        ):
+        if chart_path and os.path.exists(chart_path):
             try:
                 os.remove(chart_path)
-
             except OSError as error:
-                print(
-                    "Could not remove temporary chart:",
-                    repr(error),
-                )
+                print("Could not remove temporary chart:", repr(error))
 
 
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    await acknowledge_button(
-        update
-    )
+async def dashboard_loop(app: Application) -> None:
+    state = load_dashboard_state()
 
-    await delete_command_message(
-        update
-    )
+    while True:
+        try:
+            await ensure_status_message(app, state)
+            await ensure_chart_message(app, state)
+        except Exception as error:
+            print("Dashboard update error:", repr(error))
 
-    await send_temporary_message(
-        update,
-        context,
-        (
-            "🤖 Бот контролю електропостачання\n\n"
-            "🔌 Статус — поточний стан і напруга.\n"
-            "📈 Статистика — PNG-графік та дані "
-            f"за останні {HISTORY_HOURS} год.\n\n"
-            "Для керування використовуйте "
-            "закріплене повідомлення."
-        ),
-    )
-
-
-async def handle_menu_button(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    query = update.callback_query
-
-    if query is None:
-        return
-
-    if query.data == "status":
-        await status(
-            update,
-            context,
-        )
-
-    elif query.data == "statistics":
-        await statistics(
-            update,
-            context,
-        )
-
-    elif query.data == "help":
-        await help_command(
-            update,
-            context,
-        )
-
-    else:
-        await query.answer(
-            "Невідома команда.",
-            show_alert=False,
-        )
+        await asyncio.sleep(DASHBOARD_UPDATE_MINUTES * 60)
 
 
 def send_from_monitor(
@@ -545,16 +267,9 @@ def send_from_monitor(
             ),
             event_loop,
         )
-
-        future.result(
-            timeout=20
-        )
-
+        future.result(timeout=20)
     except Exception as error:
-        print(
-            "Telegram monitor error:",
-            repr(error),
-        )
+        print("Telegram monitor error:", repr(error))
 
 
 def monitor(
@@ -571,15 +286,10 @@ def monitor(
 
         if last_state is None:
             last_state = power
-
             if not power:
                 outage_start = time.time()
                 outage_announced = False
-
-            time.sleep(
-                CHECK_INTERVAL_SECONDS
-            )
-
+            time.sleep(CHECK_INTERVAL_SECONDS)
             continue
 
         if not power:
@@ -587,14 +297,10 @@ def monitor(
                 outage_start = time.time()
                 outage_announced = False
 
-            outage_duration = (
-                time.time()
-                - outage_start
-            )
+            outage_duration = time.time() - outage_start
 
             if (
-                outage_duration
-                >= OUTAGE_CONFIRMATION_SECONDS
+                outage_duration >= OUTAGE_CONFIRMATION_SECONDS
                 and not outage_announced
             ):
                 send_from_monitor(
@@ -605,62 +311,43 @@ def monitor(
                         f"🔌 Напруга: {voltage:.1f} В"
                     ),
                 )
-
                 outage_announced = True
 
-        else:
-            if outage_start is not None:
-                outage_duration = int(
-                    time.time()
-                    - outage_start
+        elif outage_start is not None:
+            outage_duration = int(time.time() - outage_start)
+
+            if outage_announced:
+                send_from_monitor(
+                    app,
+                    event_loop,
+                    (
+                        "🟢 Електропостачання відновлено\n\n"
+                        "⏱ Тривалість відключення: "
+                        f"{format_duration(outage_duration)}\n"
+                        f"🔌 Напруга: {voltage:.1f} В"
+                    ),
                 )
 
-                if outage_announced:
-                    duration_text = format_duration(
-                        outage_duration
-                    )
-
-                    send_from_monitor(
-                        app,
-                        event_loop,
-                        (
-                            "🟢 Електропостачання відновлено\n\n"
-                            "⏱ Тривалість відключення: "
-                            f"{duration_text}\n"
-                            f"🔌 Напруга: {voltage:.1f} В"
-                        ),
-                    )
-
-                outage_start = None
-                outage_announced = False
+            outage_start = None
+            outage_announced = False
 
         last_state = power
-
-        time.sleep(
-            CHECK_INTERVAL_SECONDS
-        )
+        time.sleep(CHECK_INTERVAL_SECONDS)
 
 
-async def post_init(
-    app: Application,
-) -> None:
+async def post_init(app: Application) -> None:
     event_loop = asyncio.get_running_loop()
 
-    monitoring_thread = threading.Thread(
+    threading.Thread(
         target=monitor,
-        args=(
-            app,
-            event_loop,
-        ),
+        args=(app, event_loop),
         daemon=True,
         name="electricity-monitor",
-    )
+    ).start()
 
-    monitoring_thread.start()
+    app.create_task(dashboard_loop(app))
 
-    print(
-        "Electricity monitoring thread started."
-    )
+    print("Electricity dashboard and monitoring started.")
 
 
 def main() -> None:
@@ -671,41 +358,7 @@ def main() -> None:
         .build()
     )
 
-    app.add_handler(
-        CommandHandler(
-            "start",
-            start_command,
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "status",
-            status,
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "statistics",
-            statistics,
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "help",
-            help_command,
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            handle_menu_button,
-        )
-    )
-
-    app.run_polling()
+    app.run_polling(allowed_updates=[])
 
 
 if __name__ == "__main__":
