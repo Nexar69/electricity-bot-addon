@@ -367,34 +367,35 @@ async def remove_old_reply_keyboard(
             repr(error),
         )
 
-async def remove_old_reply_keyboard(
+async def post_init(
     app: Application,
 ) -> None:
-    """
-    Remove the persistent reply keyboard left by older bot versions.
-    """
-    cleanup_message = await app.bot.send_message(
-        chat_id=CHAT_ID,
-        text="Оновлення меню…",
-        reply_markup=ReplyKeyboardRemove(
-            remove_keyboard=True,
+    event_loop = asyncio.get_running_loop()
+
+    monitoring_thread = threading.Thread(
+        target=monitor,
+        args=(
+            app,
+            event_loop,
         ),
-        disable_notification=True,
+        daemon=True,
+        name="electricity-monitor",
     )
 
-    await asyncio.sleep(1)
+    monitoring_thread.start()
 
-    try:
-        await app.bot.delete_message(
-            chat_id=CHAT_ID,
-            message_id=cleanup_message.message_id,
-        )
+    await remove_old_reply_keyboard(
+        app
+    )
 
-    except Exception as error:
-        print(
-            "Could not delete keyboard cleanup message:",
-            repr(error),
-        )
+    app.create_task(
+        dashboard_loop(app)
+    )
+
+    print(
+        "Electricity dashboard "
+        "and monitoring started."
+    )
 
 def main() -> None:
     app = (
