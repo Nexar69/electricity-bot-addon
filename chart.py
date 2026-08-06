@@ -265,17 +265,13 @@ def create_statistics_chart(
         text.set_color("#e9eef2")
 
     summary = (
-        f"Доступність: {stats['uptime_percent']:.2f}%\n"
-        f"З електропостачанням: {stats['uptime']}\n"
-        f"Без електропостачання: {stats['downtime']}\n"
-        f"Середня при наявності: "
-        f"{stats['average_on_voltage']:.1f} В\n"
-        f"Мінімум: {stats['min_voltage']:.1f} В   "
-        f"Максимум: {stats['max_voltage']:.1f} В\n"
-        f"Відключень: {stats['outages']}   "
-        f"Подій низької напруги: "
-        f"{stats['low_voltage_events']}"
-    )
+    f"Доступність: {stats['uptime_percent']:.2f}%\n"
+    f"З електропостачанням: {stats['uptime']}\n"
+    f"Без електропостачання: {stats['downtime']}\n"
+    f"Відключень: {stats['outages']}   "
+    f"Подій низької напруги: "
+    f"{stats['low_voltage_events']}"
+)
 
     figure.text(
         0.075,
