@@ -1,5 +1,5 @@
 name: Electricity Telegram Bot
-version: "1.2.0"
+version: "1.3.0"
 slug: electricity_telegram_bot
 description: Telegram bot for monitoring electricity
 startup: application
@@ -16,7 +16,8 @@ options:
   off_voltage: 150
   low_voltage_threshold: 200
   history_hours: 24
-  auto_delete_seconds: 20
+  dashboard_update_minutes: 5
+  outage_confirmation_seconds: 10
 
 schema:
   telegram_token: str
@@ -26,4 +27,5 @@ schema:
   off_voltage: int
   low_voltage_threshold: int
   history_hours: int
-  auto_delete_seconds: int
+  dashboard_update_minutes: int
+  outage_confirmation_seconds: int
