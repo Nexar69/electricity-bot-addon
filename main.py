@@ -8,7 +8,10 @@ import requests
 
 from chart import create_statistics_chart
 from history import calculate_statistics, get_history
-from telegram import InputMediaPhoto
+from telegram import (
+    InputMediaPhoto,
+    ReplyKeyboardRemove,
+)
 from telegram.ext import Application
 
 CONFIG_PATH = "/data/options.json"
@@ -344,11 +347,41 @@ async def post_init(app: Application) -> None:
         daemon=True,
         name="electricity-monitor",
     ).start()
-
+        await remove_old_reply_keyboard(
+        app
+    )
     app.create_task(dashboard_loop(app))
 
     print("Electricity dashboard and monitoring started.")
 
+async def remove_old_reply_keyboard(
+    app: Application,
+) -> None:
+    """
+    Remove the persistent reply keyboard left by older bot versions.
+    """
+    cleanup_message = await app.bot.send_message(
+        chat_id=CHAT_ID,
+        text="Оновлення меню…",
+        reply_markup=ReplyKeyboardRemove(
+            remove_keyboard=True,
+        ),
+        disable_notification=True,
+    )
+
+    await asyncio.sleep(1)
+
+    try:
+        await app.bot.delete_message(
+            chat_id=CHAT_ID,
+            message_id=cleanup_message.message_id,
+        )
+
+    except Exception as error:
+        print(
+            "Could not delete keyboard cleanup message:",
+            repr(error),
+        )
 
 def main() -> None:
     app = (
