@@ -116,16 +116,15 @@ def build_status_text(voltage: float) -> str:
 
 def build_chart_caption(stats: dict) -> str:
     timestamp = time.strftime("%d.%m.%Y %H:%M")
+
     return (
         f"📈 Статистика за останні {HISTORY_HOURS} год\n\n"
         f"🟢 З електропостачанням: {stats['uptime']}\n"
         f"🔴 Без електропостачання: {stats['downtime']}\n"
         f"📊 Доступність: {stats['uptime_percent']:.2f}%\n\n"
-        f"🟢 Середня при наявності: {stats['average_on_voltage']:.1f} В\n"
-        f"⬆ Максимальна: {stats['max_voltage']:.1f} В\n"
-        f"⬇ Мінімальна: {stats['min_voltage']:.1f} В\n\n"
         f"🔌 Відключень: {stats['outages']}\n"
-        f"⚠️ Подій низької напруги: {stats['low_voltage_events']}\n"
+        f"⚠️ Подій низької напруги: "
+        f"{stats['low_voltage_events']}\n"
         f"🕒 Оновлено: {timestamp}"
     )
 
