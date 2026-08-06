@@ -341,15 +341,10 @@ def monitor(
 async def remove_old_reply_keyboard(
     app: Application,
 ) -> None:
-    """
-    Remove the persistent reply keyboard left by older bot versions.
-    """
     cleanup_message = await app.bot.send_message(
         chat_id=CHAT_ID,
         text="Оновлення меню…",
-        reply_markup=ReplyKeyboardRemove(
-            remove_keyboard=True,
-        ),
+        reply_markup=ReplyKeyboardRemove(),
         disable_notification=True,
     )
 
@@ -367,12 +362,13 @@ async def remove_old_reply_keyboard(
             repr(error),
         )
 
+
 async def post_init(
     app: Application,
 ) -> None:
     event_loop = asyncio.get_running_loop()
 
-    monitoring_thread = threading.Thread(
+    threading.Thread(
         target=monitor,
         args=(
             app,
@@ -380,9 +376,7 @@ async def post_init(
         ),
         daemon=True,
         name="electricity-monitor",
-    )
-
-    monitoring_thread.start()
+    ).start()
 
     await remove_old_reply_keyboard(
         app
@@ -397,6 +391,7 @@ async def post_init(
         "and monitoring started."
     )
 
+
 def main() -> None:
     app = (
         Application.builder()
@@ -405,7 +400,9 @@ def main() -> None:
         .build()
     )
 
-    app.run_polling(allowed_updates=[])
+    app.run_polling(
+        allowed_updates=[]
+    )
 
 
 if __name__ == "__main__":
