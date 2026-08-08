@@ -1,5 +1,5 @@
 name: Electricity Telegram Bot
-version: "1.4.0"
+version: "1.5.0"
 slug: electricity_telegram_bot
 description: Telegram bot for monitoring electricity
 startup: application
@@ -20,6 +20,11 @@ options:
   dashboard_reset_time: "08:00"
   outage_confirmation_seconds: 10
 
+  developer_mode: false
+  developer_fake_voltage: -1
+  developer_reset_dashboard_on_start: false
+  developer_send_test_alerts_on_start: false
+
 schema:
   telegram_token: str
   chat_id: str
@@ -31,3 +36,8 @@ schema:
   dashboard_update_minutes: int
   dashboard_reset_time: str
   outage_confirmation_seconds: int
+
+  developer_mode: bool
+  developer_fake_voltage: float
+  developer_reset_dashboard_on_start: bool
+  developer_send_test_alerts_on_start: bool
