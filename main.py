@@ -43,6 +43,11 @@ OUTAGE_CONFIRMATION_SECONDS = max(
 CHECK_INTERVAL_SECONDS = 5
 HA_URL = "http://homeassistant:8123/api/states/"
 
+DASHBOARD_RESET_TIME = config.get(
+    "dashboard_reset_time",
+    "08:00",
+)
+
 HEADERS = {
     "Authorization": f"Bearer {HA_TOKEN}",
     "Content-Type": "application/json",
