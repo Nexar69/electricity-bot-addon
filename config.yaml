@@ -18,6 +18,7 @@ options:
   history_hours: 24
   dashboard_update_minutes: 5
   outage_confirmation_seconds: 10
+  dashboard_reset_time: "08:00"
 
 schema:
   telegram_token: str
@@ -29,3 +30,4 @@ schema:
   history_hours: int
   dashboard_update_minutes: int
   outage_confirmation_seconds: int
+  dashboard_reset_time: str
